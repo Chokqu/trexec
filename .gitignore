@@ -1,0 +1,17 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Test binaries
+*.test
+*.out
+
+# OS files
+.DS_Store
+
+# Internal documentation
+md/
