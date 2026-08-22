@@ -22,8 +22,10 @@ type options struct {
 	dir            string
 	env            []string
 	extraFiles     []*os.File
-	sysProcAttr    *syscall.SysProcAttr
-	onStateChange  func(State)
+	sysProcAttr         *syscall.SysProcAttr
+	onStateChange       func(State)
+	metricsPollInterval time.Duration
+	onMetrics           func(TreeMetrics)
 }
 
 // defaultOptions returns the default configuration.
@@ -140,3 +142,35 @@ func WithOnStateChange(fn func(State)) Option {
 		o.onStateChange = fn
 	}
 }
+
+// TreeMetrics contains a real-time snapshot of the process tree's resource consumption and state.
+type TreeMetrics struct {
+	// Timestamp is the moment the metrics snapshot was taken.
+	Timestamp time.Time
+
+	// ActiveProcesses is the count of live descendant processes in the tree.
+	ActiveProcesses int
+
+	// TotalMemoryBytes is the cumulative resident memory across the process tree (if available).
+	TotalMemoryBytes int64
+
+	// TotalCPUTime is the aggregate CPU execution duration (if available).
+	TotalCPUTime time.Duration
+
+	// State is the current lifecycle state of the command.
+	State State
+}
+
+// WithMetricsPollInterval configures periodic metric emission for the process tree.
+// If interval is <= 0, a default interval of 500ms is used.
+// The callback is invoked from a dedicated goroutine and must not block.
+func WithMetricsPollInterval(interval time.Duration, callback func(TreeMetrics)) Option {
+	return func(o *options) {
+		if interval <= 0 {
+			interval = 500 * time.Millisecond
+		}
+		o.metricsPollInterval = interval
+		o.onMetrics = callback
+	}
+}
+

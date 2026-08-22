@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -22,6 +23,7 @@ import (
 // guarantees that all child and descendant processes are terminated when
 // the job handle is closed or terminated.
 type windowsProcessGroup struct {
+	mu  sync.RWMutex
 	job windows.Handle
 	cmd *exec.Cmd
 }
@@ -149,6 +151,8 @@ func (g *windowsProcessGroup) terminate() error {
 }
 
 func (g *windowsProcessGroup) close() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if g.job != 0 {
 		err := windows.CloseHandle(g.job)
 		g.job = 0
@@ -164,7 +168,11 @@ type jobObjectBasicProcessIdList struct {
 }
 
 func (g *windowsProcessGroup) pids() ([]int, error) {
-	if g.job == 0 {
+	g.mu.RLock()
+	job := g.job
+	g.mu.RUnlock()
+
+	if job == 0 {
 		if g.cmd != nil && g.cmd.Process != nil {
 			return []int{g.cmd.Process.Pid}, nil
 		}
@@ -178,7 +186,7 @@ func (g *windowsProcessGroup) pids() ([]int, error) {
 
 	var returnLen uint32
 	err := windows.QueryInformationJobObject(
-		g.job,
+		job,
 		windows.JobObjectBasicProcessIdList,
 		uintptr(unsafe.Pointer(&buf[0])),
 		bufSize,
@@ -235,7 +243,13 @@ type jobObjectExtendedLimitInformation struct {
 }
 
 func (g *windowsProcessGroup) setLimits(limits *ResourceLimits) error {
-	if limits == nil || g.job == 0 {
+	if limits == nil {
+		return nil
+	}
+	g.mu.RLock()
+	job := g.job
+	g.mu.RUnlock()
+	if job == 0 {
 		return nil
 	}
 
@@ -258,7 +272,7 @@ func (g *windowsProcessGroup) setLimits(limits *ResourceLimits) error {
 
 	const JobObjectExtendedLimitInformation = 9
 	_, err := windows.SetInformationJobObject(
-		g.job,
+		job,
 		JobObjectExtendedLimitInformation,
 		uintptr(unsafe.Pointer(&info)),
 		uint32(unsafe.Sizeof(info)),

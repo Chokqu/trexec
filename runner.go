@@ -211,7 +211,61 @@ func (r *Runner) Start() error {
 	// Launch process wait goroutine.
 	go r.waitForProcess()
 
+	if r.opts.onMetrics != nil {
+		go r.pollMetrics()
+	}
+
 	return nil
+}
+
+// pollMetrics periodically queries process metrics and invokes onMetrics.
+func (r *Runner) pollMetrics() {
+	interval := r.opts.metricsPollInterval
+	if interval <= 0 {
+		interval = 500 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.procDone:
+			r.emitMetricsSnapshot(r.currentState())
+			return
+		case <-ticker.C:
+			st := r.currentState()
+			if st == StateDone {
+				return
+			}
+			r.emitMetricsSnapshot(st)
+		}
+	}
+}
+
+// emitMetricsSnapshot gathers current metrics and invokes the onMetrics callback.
+func (r *Runner) emitMetricsSnapshot(state State) {
+	if r.opts.onMetrics == nil {
+		return
+	}
+
+	var activeProcs int
+	if r.group != nil {
+		if pids, err := r.group.pids(); err == nil {
+			activeProcs = len(pids)
+		}
+	}
+	if activeProcs == 0 && state == StateRunning {
+		activeProcs = 1
+	}
+
+	metrics := TreeMetrics{
+		Timestamp:       time.Now(),
+		ActiveProcesses: activeProcs,
+		State:           state,
+	}
+
+	fn := r.opts.onMetrics
+	fn(metrics)
 }
 
 // waitForProcess waits for the process to exit and records the result.

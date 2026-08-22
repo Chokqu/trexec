@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -17,6 +18,7 @@ import (
 // It creates a new process group (via setpgid) and signals the entire
 // group using kill with a negative PGID.
 type unixProcessGroup struct {
+	mu   sync.RWMutex
 	pgid int
 }
 
@@ -44,12 +46,18 @@ func (g *unixProcessGroup) setup(cmd *exec.Cmd) error {
 func (g *unixProcessGroup) activate(cmd *exec.Cmd) error {
 	// On Unix, setpgid happens during fork/exec — the PGID is the child's PID
 	// when we used Pgid=0.
+	g.mu.Lock()
 	g.pgid = cmd.Process.Pid
+	g.mu.Unlock()
 	return nil
 }
 
 func (g *unixProcessGroup) signal(sig Signal) error {
-	if g.pgid == 0 {
+	g.mu.RLock()
+	pgid := g.pgid
+	g.mu.RUnlock()
+
+	if pgid == 0 {
 		return os.ErrProcessDone
 	}
 
@@ -68,13 +76,13 @@ func (g *unixProcessGroup) signal(sig Signal) error {
 	}
 
 	// Negative PID sends the signal to the entire process group.
-	err := syscall.Kill(-g.pgid, s)
+	err := syscall.Kill(-pgid, s)
 	if err != nil {
 		if errors.Is(err, syscall.ESRCH) {
 			// No such process/group — already gone.
 			return os.ErrProcessDone
 		}
-		return fmt.Errorf("trexec: kill(-%d, %s): %w", g.pgid, s, err)
+		return fmt.Errorf("trexec: kill(-%d, %s): %w", pgid, s, err)
 	}
 	return nil
 }
@@ -86,17 +94,23 @@ func (g *unixProcessGroup) terminate() error {
 func (g *unixProcessGroup) close() error {
 	// No OS resources to release on Unix — process groups are
 	// purely a kernel-tracked attribute, not a handle.
+	g.mu.Lock()
 	g.pgid = 0
+	g.mu.Unlock()
 	return nil
 }
 
 func (g *unixProcessGroup) pids() ([]int, error) {
-	if g.pgid <= 0 {
+	g.mu.RLock()
+	pgid := g.pgid
+	g.mu.RUnlock()
+
+	if pgid <= 0 {
 		return nil, nil
 	}
-	pids := findGroupPIDs(g.pgid)
+	pids := findGroupPIDs(pgid)
 	if len(pids) == 0 {
-		return []int{g.pgid}, nil
+		return []int{pgid}, nil
 	}
 	return pids, nil
 }
