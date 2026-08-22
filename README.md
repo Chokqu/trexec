@@ -4,8 +4,8 @@
   <img src="https://raw.githubusercontent.com/Chokqu/trexec/master/doc/logo.png" alt="trexec logo" width="120" onerror="this.style.display='none'"/>
   <br>
   <strong>Own the workload, not just the process.</strong><br>
-  Cross-platform process tree lifecycle manager and supervisor for Go.<br>
-  <em>Graceful shutdown, two-phase force-kill escalation, interactive I/O streaming, and zero orphan processes on Linux, macOS, and Windows.</em>
+  Cross-platform process tree lifecycle manager, supervisor, and dev engine for Go.<br>
+  <em>Graceful shutdown, two-phase force-kill escalation, interactive I/O streaming, live-reloading, telemetry, and zero orphan processes on Linux, macOS, and Windows.</em>
 </p>
 
 <p align="center">
@@ -57,6 +57,10 @@ your-app ──► [ Process Group / Windows Job Object ]
 - **🔀 Synchronized Stream Buffering**: `Output()` and `CombinedOutput()` return captured byte streams alongside rich outcome metadata.
 - **💬 Interactive Stdin Streaming**: `StdinPipe()` provides dynamic `io.WriteCloser` streaming with clean EOF signaling.
 - **🔍 Process Tree Introspection**: Returns `Result.DescendantPIDs []int` and `Result.ProcessesCleaned int` using Windows Job Object query APIs and Linux `/proc`.
+- **🔄 Pure Go Live-Reload Engine**: `trexec/watcher` debounces filesystem events, drains old workloads completely, and guarantees socket release on restart.
+- **👮 Embedded Multi-Worker Supervisor**: `trexec/supervisor` provides in-process worker pool management, restart policies (`RestartAlways`, `RestartOnFailure`), and exponential backoff with jitter.
+- **📊 Real-Time Telemetry & Metrics**: `trexec/telemetry` & `WithMetricsPollInterval` stream live process counts, memory usage, CPU time, and state transitions to OpenTelemetry/Prometheus.
+- **🐍 Cobra CLI Integration**: `trexec/cobraexec` wraps `spf13/cobra` commands with zero-leak process tree lifecycle supervision.
 - **🌐 Unified Cross-Platform Signals**: Write `trexec.WithGracefulSignal(trexec.SIGINT)` once; compiles and executes identically on Linux, macOS, and Windows with zero OS-specific imports.
 - **🚦 6-State Formal Lifecycle**: Track execution state (`Created` &rarr; `Starting` &rarr; `Running` &rarr; `Stopping` &rarr; `Killing` &rarr; `Done`) via `WithOnStateChange`.
 - **📦 Zero Third-Party Runtime Dependencies**: Pure Go standard library on Unix; official `golang.org/x/sys` on Windows.
@@ -73,7 +77,7 @@ Compatible with **Go 1.21, 1.22, 1.23, 1.24, 1.25, and 1.26+**.
 
 ---
 
-## 🚀 Quick Start Examples
+## 🚀 Quick Start & Usage
 
 ### 1. One-Liner Command Execution with Structured Result
 
@@ -153,25 +157,105 @@ result := cmd.Wait()
 
 ---
 
-### 4. Background Service Supervisor with State Hooks
+### 4. Live-Reload DevServer (`trexec/watcher`)
 
 ```go
-cmd := trexec.CommandContext(ctx, "docker-compose", []string{"up"},
-    trexec.WithGracePeriod(8*time.Second),
-    trexec.WithOnStateChange(func(state trexec.State) {
-        log.Printf("[service:state] -> %s", state)
-    }),
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+    "time"
+
+    "github.com/Chokqu/trexec/watcher"
 )
 
-if err := cmd.Start(); err != nil {
-    log.Fatal(err)
+func main() {
+    reloader := watcher.NewReloader(watcher.ReloaderConfig{
+        Watcher: watcher.DefaultConfig("./src", "./cmd"),
+        Command: "go",
+        Args:    []string{"run", "./cmd/server"},
+        Stdout:  os.Stdout,
+        Stderr:  os.Stderr,
+        GracePeriod: 2 * time.Second,
+        OnRestart: func(attempt int, changedFiles []string) {
+            log.Printf("[reloader] Files modified (%v) -> Restarting server (attempt #%d)...", changedFiles, attempt)
+        },
+    })
+
+    if err := reloader.Run(context.Background()); err != nil {
+        log.Fatal(err)
+    }
 }
-
-log.Printf("Process tree running (Root PID: %d)...", cmd.PID())
-
-result := cmd.Wait()
-log.Printf("Service shutdown complete: %s", result)
 ```
+
+---
+
+### 5. Multi-Worker Supervisor with Exponential Backoff (`trexec/supervisor`)
+
+```go
+sup := supervisor.New()
+
+// Register workers with custom restart policies
+_ = sup.Add(supervisor.Spec{
+    Name:          "api-server",
+    Command:       "./bin/api",
+    RestartPolicy: supervisor.RestartAlways,
+    GracePeriod:   5 * time.Second,
+})
+
+_ = sup.Add(supervisor.Spec{
+    Name:          "queue-consumer",
+    Command:       "./bin/worker",
+    RestartPolicy: supervisor.RestartOnFailure,
+    MaxRestarts:   10,
+    Backoff:       supervisor.DefaultBackoff(),
+})
+
+// Start supervising pool
+_ = sup.Start(ctx)
+
+// Wait for pool shutdown or interrupt
+results := sup.Wait()
+```
+
+---
+
+### 6. Cobra CLI Integration (`trexec/cobraexec`)
+
+```go
+package cmd
+
+import (
+    "time"
+
+    "github.com/Chokqu/trexec"
+    "github.com/Chokqu/trexec/cobraexec"
+    "github.com/spf13/cobra"
+)
+
+var devCmd = &cobra.Command{
+    Use:   "dev",
+    Short: "Run frontend development server with automatic tree supervision",
+    RunE:  cobraexec.WrapRunE("npm", []string{"run", "dev"}, trexec.WithGracePeriod(5*time.Second)),
+}
+```
+
+---
+
+## ⚡ Performance Benchmarks
+
+Measured on Apple Silicon (M-series / ARM64, 8 threads, Go 1.26):
+
+| Benchmark Target | Latency | Memory Allocations | Description |
+|---|---|---|---|
+| `BenchmarkStandardExec` (Baseline) | `2.82 ms/op` | `10,368 B/op (30 allocs)` | Raw `os/exec.Command().Run()` |
+| `BenchmarkTrexecRun` | `3.17 ms/op` | `11,584 B/op (47 allocs)` | `trexec.Run()` with tree ownership |
+| `BenchmarkTrexecSpawnLatency` | `2.93 ms/op` | `11,558 B/op (47 allocs)` | Group creation, fork/exec, initialization |
+| `BenchmarkTrexecTreeKill` | **`699 µs/op`** | `12,160 B/op (55 allocs)` | Immediate force-kill of multi-level tree |
+| `BenchmarkTrexecOutputBuffering` | `3.09 ms/op` | `13,512 B/op (52 allocs)` | Capturing stdout with rich Result struct |
+| `BenchmarkTrexecSupervisorRestart` | `4.38 ms/op` | `12,453 B/op (57 allocs)` | Worker termination & supervised respawn |
 
 ---
 
@@ -187,6 +271,8 @@ log.Printf("Service shutdown complete: %s", result)
 | **Cross-platform signal abstraction** | ❌ (Requires `syscall`) | ❌ | ❌ | **✅ Unified `trexec.Signal`** |
 | **Interactive `StdinPipe` streaming** | ⚠️ (Leaky handles) | ❌ | ❌ | **✅ Safe bounded streaming** |
 | **Descendant PID introspection** | ❌ | ❌ | ❌ | **✅ `Result.DescendantPIDs`** |
+| **Live-Reload File Watcher Engine** | ❌ | ❌ | ❌ | **✅ Built-in `trexec/watcher`** |
+| **Embedded Multi-Worker Supervisor** | ❌ | ❌ | ❌ | **✅ Built-in `trexec/supervisor`** |
 | **Zero third-party runtime dependencies** | ✅ | ✅ | ❌ | **✅ Stdlib + official `x/sys`** |
 
 ---
