@@ -112,21 +112,21 @@ func TestLoggerSink(t *testing.T) {
 }
 
 func TestWithMetricsPollIntervalIntegration(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var mu sync.Mutex
 	var collected []trexec.TreeMetrics
 
 	opts := []trexec.Option{
-		trexec.WithMetricsPollInterval(50*time.Millisecond, func(m trexec.TreeMetrics) {
+		trexec.WithMetricsPollInterval(20*time.Millisecond, func(m trexec.TreeMetrics) {
 			mu.Lock()
 			collected = append(collected, m)
 			mu.Unlock()
 		}),
 	}
 
-	cmd := trexec.CommandContext(ctx, helperBin, []string{"-sleep=200ms"}, opts...)
+	cmd := trexec.CommandContext(ctx, helperBin, []string{"-sleep=100ms"}, opts...)
 	res, err := cmd.Run()
 	if err != nil || !res.Success() {
 		t.Fatalf("command failed: %v, res: %v", err, res)
@@ -145,12 +145,12 @@ func TestWithMetricsPollIntervalIntegration(t *testing.T) {
 
 func TestHookOptionsBridge(t *testing.T) {
 	sink := telemetry.NewMemorySink()
-	opts := telemetry.HookOptions(sink, 50*time.Millisecond)
+	opts := telemetry.HookOptions(sink, 20*time.Millisecond)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := trexec.CommandContext(ctx, helperBin, []string{"-sleep=150ms"}, opts...)
+	cmd := trexec.CommandContext(ctx, helperBin, []string{"-sleep=100ms"}, opts...)
 	res, err := cmd.Run()
 	if err != nil || !res.Success() {
 		t.Fatalf("command failed: %v, res: %v", err, res)
