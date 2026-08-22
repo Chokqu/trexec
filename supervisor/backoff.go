@@ -30,6 +30,16 @@ func DefaultBackoff() *Backoff {
 	}
 }
 
+// NewBackoff constructs a custom Backoff strategy with the specified parameters.
+func NewBackoff(min, max time.Duration, factor, jitter float64) *Backoff {
+	return &Backoff{
+		Min:    min,
+		Max:    max,
+		Factor: factor,
+		Jitter: jitter,
+	}
+}
+
 // Duration calculates the backoff duration for the specified attempt index (1-based).
 func (b *Backoff) Duration(attempt int) time.Duration {
 	if attempt <= 1 {
